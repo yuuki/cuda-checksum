@@ -5,7 +5,7 @@
 #include <string.h>
 #include <math.h>
 
-
+#include <cuda.h>
 #include <cuda_runtime.h>
 
 #include <helper_functions.h>
@@ -89,9 +89,8 @@ int main(int argc, char* argv[]) {
             exit(EXIT_SUCCESS);
         }
 
-        uint32_t buf[MAX_BUFSIZE];
-        checkCudaErrors(cudaHostAlloc((void**)&buf, MAX_BUFSIZE, 0));
-        if (fgets((char *)buf, MAX_BUFSIZE, stdin) == NULL) {
+        char *buf = (char *)malloc(sizeof(char) * MAX_BUFSIZE);
+        if (fgets((char *)buf, sizeof(char) * MAX_BUFSIZE, stdin) == NULL) {
             perror("fgets");
             checkCudaErrors(cudaFreeHost(buf));
             return -1;
@@ -99,8 +98,11 @@ int main(int argc, char* argv[]) {
 
         StartTimer();
 
+        size_t buflen = strlen((char *)buf);
+        checkCudaErrors(cudaHostRegister((uint32_t *)buf, sizeof(uint32_t) * buflen, CU_MEMHOSTALLOC_DEVICEMAP));
+
         uint16_t gpu_cksum = 0;
-        int ret = cu_cksum(&gpu_cksum, buf, strlen((char *)buf), num_tblocks, num_threads);
+        int ret = cu_cksum(&gpu_cksum, (uint32_t *)buf, buflen, num_tblocks, num_threads);
         if (ret < 0) {
             checkCudaErrors(cudaFreeHost(buf));
             return -1;
@@ -108,8 +110,11 @@ int main(int argc, char* argv[]) {
 
         float latency = GetTimer();
 
-        uint16_t _cpu_cksum = cpu_cksum((uint8_t *)buf, strlen((char *)buf));
+        uint16_t _cpu_cksum = cpu_cksum((uint8_t *)buf, buflen);
         print_result(_cpu_cksum, gpu_cksum, latency);
+
+        free(buf);
+        cudaDeviceReset();
     }
 
     return 0;
