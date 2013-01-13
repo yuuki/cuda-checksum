@@ -2,9 +2,9 @@ BIN               := checksum_test
 
 CUDA_INSTALL_PATH := /usr/local/cuda
 INCLUDES          := -I$(CUDA_INSTALL_PATH)/include -I$(CUDA_INSTALL_PATH)/samples/common/inc -Iinclude
-LIBS              := -lcudart  -lstdc++
-CFLAGS            := -O2 -Wall -Wextra
-NVCCFLAGS         := -O2 -gencode=arch=compute_30,code=sm_30
+LIBS              := -lcudart -lstdc++
+CFLAGS            := -O0 -g -Wall -Wextra
+NVCCFLAGS         := -O0 -g -G -gencode=arch=compute_30,code=sm_30
 LDFLAGS           := -L$(CUDA_INSTALL_PATH)/lib64
 
 NVCC              := $(CUDA_INSTALL_PATH)/bin/nvcc
@@ -20,9 +20,6 @@ all: $(BIN)
 $(BIN): clean $(TEST_OBJS) $(CU_OBJS)
 	$(LINKER) -o $(BIN) $(TEST_OBJS) $(CU_OBJS) $(LDFLAGS) $(INCLUDES) $(LIBS)
 
-test: $(BIN)
-	LD_LIBRARY_PATH=$(CUDA_INSTALL_PATH)/lib64 ./$(BIN)
-
 .SUFFIXES: .o .c .cpp .cu
 
 .c.o:
@@ -30,9 +27,6 @@ test: $(BIN)
 
 .cu.o:
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) -c $< -o $@
-
-run: $(BIN)
-	LD_LIBRARY_PATH=$(CUDA_INSTALL_PATH)/lib64 ./$(BIN)
 
 clean:
 	rm -f $(BIN) $(TEST_OBJS) $(CU_OBJS)

@@ -5,80 +5,66 @@
 #include <string.h>
 #include <math.h>
 
-#include <cutil_inline.h>
+
+#include <cuda_runtime.h>
+
+#include <helper_functions.h>
+#include <helper_cuda.h>
+#include <timer.h>
+
 
 #include "cksum.h"
 
-extern "C"
+#define MAX_BUFSIZE 1500
 
-static int loop_cksum(uint32_t *data, size_t len, int max_exe_times, int num_threads, int num_tblocks) {
-    uint32_t* buf;
-    unsigned int mem_size = sizeof(uint8_t) * block_size * num_threads * num_tblocks;
-    unsigned int bufsize = sizeof(int) * num_threads * num_tblocks;
-    unsigned int md_size = sizeof(int) * SHA_DIGEST_LENGTH * num_threads * num_tblocks;
+static void print_result(uint16_t cpu_cksum, uint16_t gpu_cksum, float latency) {
+    printf("-------------------------\n");
+    /* printf("cuda kernel elapsed time %4.2f\n", kernel_elapsed_time); */
+    printf("latency time %8.2f ms\n", latency);
+    printf("CPU checksum %2x\n", cpu_cksum);
+    printf("GPU checksum %2x\n", gpu_cksum);
+    (cpu_cksum == gpu_cksum) ? printf("Test passed\n") : printf("test failed\n");
+    printf("-------------------------\n");
+}
 
-    cutilSafeCall(cudaHostAlloc((void**)&buf, mem_size * max_exe_times, 0));
-    cutilSafeCall(cudaHostAlloc((void**)&msglen, msglen_size * max_exe_times, 0));
-    cutilSafeCall(cudaHostAlloc((void**)&d_cksum, md_size * max_exe_times, 0));
-
-    uint32_t bandwidth_timer = 0;
-    cutilCheckError(cutCreateTimer(&bandwidth_timer));
-    cutilCheckError(cutStartTimer(bandwidth_timer));
-
-    uint16_t d_cksum = 0;
-    cutilSafeCall(cudaMalloc((void* )&d_cksum, sizeof(uint16_t)));
-
-    cudaEvent_t start, stop;
-    cutilSafeCall(cudaEventCreate(&start));
-    cutilSafeCall(cudaEventCreate(&stop));
-
-    cutilSafeCall(cudaEventRecord(start, 0));
-
-    for (int i = 0; i < exe_times; i++) {
-        unsigned int offset = num_tblocks * num_threads * i;
-        do_sha1<<<num_tblocks, num_threads>>>(d_buf + block_size * offset , d_msglen + offset, d_md + SHA_DIGEST_LENGTH * offset);
-        cutilCheckMsg("Kernel execution failed");
+static inline uint16_t cpu_cksum(uint8_t* data, size_t len) {
+    uint32_t sum = 0, c;
+    uint16_t *ptr;
+    ptr = (uint16_t *)data;
+    for (c = len; c > 1; c-= 2) {
+        sum += *ptr;
+        if (sum & 0x80000000) {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        }
+        ++ptr;
     }
-
-    cutilSafeCall(cudaEventRecord(stop, 0));
-    cutilSafeCall(cudaEventSynchronize(stop));
-    float kernel_time = 0.0f;
-    cutilSafeCall(cudaEventElapsedTime(&kernel_time, start, stop));
-
-    cutilSafeCall(cudaMemcpyAsync(md, d_md, md_size, cudaMemcpyDeviceToHost, 0));
-
-    cutilSafeCall(cutilDeviceSynchronize());
-
-    cutilCheckError(cutStopTimer(bandwidth_timer));
-    double bandwidth_time = cutGetTimerValue(bandwidth_timer);
-    cutilCheckError(cutDeleteTimer(bandwidth_timer));
-
-    cutilSafeCall(cudaFreeHost(buf));
-    cutilSafeCall(cudaFreeHost(msglen));
-    cutilSafeCall(cudaFreeHost(md));
-    cutilSafeCall(cudaFree(d_cksum));
-    cutilSafeCall(cudaEventDestroy(start));
-    cutilSafeCall(cudaEventDestroy(stop));
-
-    cutilDeviceReset();
+    if (c == 1) {
+        uint16_t val = 0;
+        memcpy(&val, ptr, sizeof(uint8_t));
+        sum += val;
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    return (sum == 0xFFFF) ? sum : ~sum;
 }
 
 int main(int argc, char* argv[]) {
+    int ret = 0;
     extern char *optarg;
     extern int  optind, opterr;
+    char ch;
 
-    cutilSafeCall(cudaSetDevice(cutGetMaxGflopsDeviceId()));
+    int num_tblocks = 1, num_threads = 1;
+    int devID = 0;
+    cudaDeviceProp deviceProp;
+
+    devID = findCudaDevice(argc, (const char **)argv);
 
     while ((ch = getopt(argc, argv, "b:c:n:t:")) != -1) {
         switch(ch) {
             case 'b':
                 num_tblocks = atoi(optarg);
-                break;
-            case 'c':
-                block_size = atoi(optarg);
-                break;
-            case 'n':
-                max_exe_times = atoi(optarg);
                 break;
             case 't':
                 num_threads = atoi(optarg);
@@ -88,19 +74,43 @@ int main(int argc, char* argv[]) {
     argc -= optind;
     argv += optind;
 
-    if (argc == 0) {
-        printf("no operand\n");
-        return -1;
-    } else if (argc > 1) {
+    if (argc > 1) {
         printf("too many operands\n");
         return -1;
     } else {
-        IN = fopen(*argv,"rb");
-        if (IN == NULL) {
-            perror(*argv);
-            err++;
+        // This will pick the best possible CUDA capable device
+
+        checkCudaErrors(cudaGetDeviceProperties(&deviceProp, devID));
+
+        if (deviceProp.major < 3) {
+            printf("cudaChecksum requires a GPU with compute capability "
+                    "3.0 or later, exiting...\n");
+            cudaDeviceReset();
+            exit(EXIT_SUCCESS);
         }
-        do_fp(IN);
-        fclose(IN);
+
+        uint32_t buf[MAX_BUFSIZE];
+        checkCudaErrors(cudaHostAlloc((void**)&buf, MAX_BUFSIZE, 0));
+        if (fgets((char *)buf, MAX_BUFSIZE, stdin) == NULL) {
+            perror("fgets");
+            checkCudaErrors(cudaFreeHost(buf));
+            return -1;
+        }
+
+        StartTimer();
+
+        uint16_t gpu_cksum = 0;
+        int ret = cu_cksum(&gpu_cksum, buf, strlen((char *)buf), num_tblocks, num_threads);
+        if (ret < 0) {
+            checkCudaErrors(cudaFreeHost(buf));
+            return -1;
+        }
+
+        float latency = GetTimer();
+
+        uint16_t _cpu_cksum = cpu_cksum((uint8_t *)buf, strlen((char *)buf));
+        print_result(_cpu_cksum, gpu_cksum, latency);
     }
+
+    return 0;
 }
