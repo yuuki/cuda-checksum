@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+#include <cuda.h>
 #include <cuda_runtime.h>
 
 #include <helper_functions.h>
@@ -60,30 +61,36 @@ __global__ void kernelChecksum(const uint32_t* g_buf, const size_t buflen) {
 
 uint16_t cu_cksum(uint16_t *cksum, const uint32_t *buf, const size_t buflen, const int num_threads, const int num_tblocks) {
     uint32_t *d_buf = NULL;
-    checkCudaErrors(cudaHostGetDevicePointer((void** )&d_buf, (void *)buf, 0));
+    {
+        checkCudaErrors(cudaHostRegister((uint32_t *)buf, sizeof(uint32_t) * buflen, CU_MEMHOSTALLOC_DEVICEMAP));
+        checkCudaErrors(cudaHostGetDevicePointer((void** )&d_buf, (void *)buf, 0));
+    }
 
     cudaEvent_t start, stop;
-    checkCudaErrors(cudaEventCreate(&start));
-    checkCudaErrors(cudaEventCreate(&stop));
-
-    checkCudaErrors(cudaEventRecord(start, 0));
+    {
+        checkCudaErrors(cudaEventCreate(&start));
+        checkCudaErrors(cudaEventCreate(&stop));
+        checkCudaErrors(cudaEventRecord(start, 0));
+    }
 
     kernelChecksum <<<num_tblocks, num_threads, buflen>>> (d_buf, buflen);
     getLastCudaError("Kernel Execution failed");
 
-    checkCudaErrors(cudaEventRecord(stop, 0));
-    checkCudaErrors(cudaEventSynchronize(stop));
-
     float kernel_time = 0.0f;
-    checkCudaErrors(cudaEventElapsedTime(&kernel_time, start, stop));
+    {
+        checkCudaErrors(cudaEventRecord(stop, 0));
+        checkCudaErrors(cudaEventSynchronize(stop));
+        checkCudaErrors(cudaEventElapsedTime(&kernel_time, start, stop));
+    }
 
     typeof(d_cksum) _cksum;
     checkCudaErrors(cudaMemcpyFromSymbol(&_cksum, d_cksum, sizeof(_cksum), 0, cudaMemcpyDeviceToHost));
 
-    checkCudaErrors(cudaEventDestroy(start));
-    checkCudaErrors(cudaEventDestroy(stop));
-
-    checkCudaErrors(cudaHostUnregister((void *)buf));
+    {
+        checkCudaErrors(cudaEventDestroy(start));
+        checkCudaErrors(cudaEventDestroy(stop));
+        checkCudaErrors(cudaHostUnregister((void *)buf));
+    }
 
     *cksum = _cksum;
 

@@ -5,7 +5,6 @@
 #include <string.h>
 #include <math.h>
 
-#include <cuda.h>
 #include <cuda_runtime.h>
 
 #include <helper_functions.h>
@@ -90,6 +89,7 @@ int main(int argc, char* argv[]) {
         }
 
         char *buf = (char *)malloc(sizeof(char) * MAX_BUFSIZE);
+        memset(buf, 0, sizeof(char) * MAX_BUFSIZE);
         if (fgets((char *)buf, sizeof(char) * MAX_BUFSIZE, stdin) == NULL) {
             perror("fgets");
             checkCudaErrors(cudaFreeHost(buf));
@@ -99,7 +99,6 @@ int main(int argc, char* argv[]) {
         StartTimer();
 
         size_t buflen = strlen((char *)buf);
-        checkCudaErrors(cudaHostRegister((uint32_t *)buf, sizeof(uint32_t) * buflen, CU_MEMHOSTALLOC_DEVICEMAP));
 
         uint16_t gpu_cksum = 0;
         int ret = cu_cksum(&gpu_cksum, (uint32_t *)buf, buflen, num_tblocks, num_threads);
